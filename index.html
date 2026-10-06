@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#b93678" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Respiro — Regulação emocional</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="icon-btn" id="backBtn" aria-label="Voltar">‹</button>
+      <div class="brand"><span class="brand-mark">✿</span><span>Respiro</span></div>
+      <button class="icon-btn" id="menuBtn" aria-label="Abrir menu">⋯</button>
+    </header>
+
+    <main id="app" class="content"></main>
+
+    <nav class="bottom-nav" aria-label="Navegação principal">
+      <button data-route="home" class="nav-item active"><span>⌂</span><small>Início</small></button>
+      <button data-route="triggers" class="nav-item"><span>◌</span><small>Gatilhos</small></button>
+      <button data-route="strategies" class="nav-item"><span>♡</span><small>Estratégias</small></button>
+      <button data-route="history" class="nav-item"><span>◷</span><small>Histórico</small></button>
+    </nav>
+  </div>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-card">
+      <button class="modal-close" id="modalClose" aria-label="Fechar">×</button>
+      <h2 id="modalTitle">Nova estratégia</h2>
+      <p id="modalHelp">Adicione algo que costuma ajudar você a se regular.</p>
+      <label>Nome
+        <input id="itemName" type="text" maxlength="60" placeholder="Ex.: Caminhar um pouco" />
+      </label>
+      <div id="strategyFields">
+        <label>Categoria
+          <select id="itemCategory">
+            <option value="corpo">Corpo</option>
+            <option value="sensorial">Sensorial</option>
+            <option value="afetivo">Afetivo</option>
+            <option value="expressivo">Expressivo</option>
+            <option value="espiritual">Espiritual</option>
+            <option value="outro">Outro</option>
+          </select>
+        </label>
+      </div>
+      <div id="triggerFields" style="display:none"><p class="modal-note">Esse gatilho ficará disponível nos próximos check-ins.</p></div>
+      <button class="primary-btn" id="saveItem">Adicionar</button>
+    </div>
+  </div>
+
+  <input id="importFile" type="file" accept="application/json,.json" hidden />
+  <div id="toast" class="toast" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
