@@ -131,3 +131,38 @@ p { line-height:1.55; }
 .settings-actions { margin-top:14px; }
 .settings-actions .secondary-btn, .settings-actions .danger-btn { margin-top:8px; }
 .muted { color:var(--muted); }
+
+/* PWA / navegação de app */
+.back-btn { min-width:94px; min-height:44px; display:flex; align-items:center; justify-content:flex-start; gap:8px; border:1px solid #f0d7e2; border-radius:14px; padding:8px 12px; background:#fff5f8; color:var(--ink); font-size:14px; }
+.back-btn span { font-size:22px; line-height:1; }
+.back-btn strong { font-size:13px; }
+.topbar { gap:10px; }
+.brand { margin-right:auto; margin-left:8px; }
+.checkin-transition { animation:softEnter .45s ease both; }
+@keyframes softEnter { from { opacity:0; transform:translateY(9px) } to { opacity:1; transform:translateY(0) } }
+.emotion { min-height:92px; }
+.emotion .face { color:#b93678; }
+.tiny { font-size:11px; text-align:center; }
+.featured-strategies { display:grid; gap:12px; margin:18px 0 24px; }
+.featured-strategy { display:grid; grid-template-columns:54px 1fr 20px; align-items:center; gap:14px; width:100%; text-align:left; border:1px solid #ebcbd9; border-radius:22px; padding:16px; background:linear-gradient(135deg,#fff 0%,#fff1f6 100%); color:var(--ink); box-shadow:0 9px 25px rgba(111,50,78,.07); min-height:102px; }
+.featured-strategy.senses-feature { background:linear-gradient(135deg,#fff 0%,#f4eef9 100%); border-color:#e1d1e9; }
+.featured-icon { width:52px; height:52px; border-radius:18px; display:grid; place-items:center; background:#f8dbe8; color:#b93678; font-size:31px; }
+.senses-feature .featured-icon { background:#e9dff2; color:#7c6091; }
+.featured-strategy strong { display:block; font-size:16px; margin-bottom:5px; }
+.featured-strategy small { display:block; color:var(--muted); font-size:12px; line-height:1.45; }
+.featured-strategy b { color:var(--primary); font-size:25px; font-weight:400; }
+.featured-strategy:active { transform:scale(.99); }
+.breath-page,.done-screen { text-align:center; padding:12px 2px 24px; animation:softEnter .35s ease both; }
+.breath-page h2 { font-size:28px; }
+.breath-stage-large { height:300px; margin:8px 0 18px; }
+.breath-stage-large .breath-circle { width:190px; height:190px; }
+.breath-stage-large .breath-circle span { font-size:18px; }
+.breath-instruction { min-height:42px; }
+.cycle-count { color:var(--primary); font-weight:700; font-size:12px; margin-top:12px; }
+.done-screen { padding-top:40px; }
+.done-screen h1 { font-size:31px; margin:12px 0; }
+.done-flower { width:92px; height:92px; margin:0 auto 26px; display:grid; place-items:center; border-radius:50%; background:radial-gradient(circle,#fff 15%,#f8d7e6 72%,#eedcf1); color:#b93678; font-size:50px; }
+.text-btn { margin-top:18px; border:0; background:transparent; color:var(--primary-dark); padding:12px; font-weight:700; }
+.secondary-btn { min-height:48px; }
+button:focus-visible { outline:3px solid #d778a1; outline-offset:3px; }
+@media (display-mode: standalone) { .app-shell { min-height:100dvh; } .topbar { padding-top:env(safe-area-inset-top); } .bottom-nav { padding-bottom:env(safe-area-inset-bottom); height:calc(74px + env(safe-area-inset-bottom)); } .content { padding-bottom:calc(110px + env(safe-area-inset-bottom)); } }

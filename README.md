@@ -45,8 +45,12 @@ Toda leitura e gravação passa pela camada `Store` do `app.js`. A versão atual
 - gatilhos pré-cadastrados e personalizados;
 - estratégias pré-cadastradas;
 - adicionar/excluir estratégias;
-- respiração guiada **4s inspirando + 6s soltando**, sem retenção;
-- exercício guiado dos **5 sentidos**;
+- respiração guiada **4s inspirando + 4s segurando + 4s soltando**, por 5 ciclos;
+- exercício guiado dos **5 sentidos**, com destaque equivalente à respiração;
+- interface PWA instalável, com ícones para Android e Apple;
+- navegação interna com botão Voltar destacado e suporte ao botão Voltar do navegador;
+- tela de emoção com transição suave para a etapa de gatilhos;
+- após uma estratégia, opção de confirmar “Estou bem”, experimentar outra ou continuar;
 - histórico local;
 - exportação/importação de backup;
 - exclusão dos dados locais;
@@ -54,7 +58,7 @@ Toda leitura e gravação passa pela camada `Store` do `app.js`. A versão atual
 
 ## Publicação no GitHub + Vercel
 
-1. Coloque `index.html`, `styles.css`, `app.js` e `README.md` em um repositório GitHub.
+1. Coloque `index.html`, `styles.css`, `app.js`, `README.md`, `manifest.webmanifest`, `sw.js` e a pasta `icons/` em um repositório GitHub.
 2. No Vercel, importe o repositório.
 3. Para esta versão estática, não é necessário banco, variável de ambiente ou autenticação.
 4. Faça o deploy.
@@ -80,3 +84,7 @@ Testar no celular e no computador:
 O projeto Android incorpora a aplicação localmente. O APK pode ser gerado no Android Studio e instalado diretamente no telefone, sem Play Store.
 
 > Este é um protótipo. Para uso real com dados de pacientes, ainda é necessário revisar privacidade, consentimento, segurança, LGPD e a adequação do armazenamento local ao contexto de uso.
+
+## Instalação como PWA
+
+A aplicação inclui um manifesto, service worker e ícones dedicados. Em um domínio HTTPS, navegadores compatíveis permitem adicionar o Respiro à tela inicial. No Android, use o menu do navegador e escolha instalar/adicionar à tela inicial. No iPhone, abra no Safari, toque em Compartilhar e escolha “Adicionar à Tela de Início”. O comportamento e a disponibilidade variam conforme o navegador e a versão do sistema.
