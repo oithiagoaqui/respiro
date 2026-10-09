@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f4efe5">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="FIO">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png">
+  <meta name="description" content="FIO — guarde o fio para depois. Um apoio visual para retomar tarefas sem perder o contexto.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <title>FIO — guarde o fio para depois</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="brand" id="brandHome" aria-label="Ir para tarefas">
+        <span class="brand-mark">FIO</span>
+        <span class="brand-tag">guarde o fio para depois</span>
+      </button>
+      <div class="topbar-actions">
+        <button class="home-btn" id="homeBtn" aria-label="Ir para a página inicial">⌂ <span>Início</span></button>
+        <button class="icon-btn" id="settingsBtn" aria-label="Dados e configurações">⚙</button>
+      </div>
+    </header>
+
+    <main id="app"></main>
+
+    <nav class="bottom-nav" aria-label="Navegação principal">
+      <button class="nav-btn active" data-view="tasks"><span>☷</span><small>Tarefas</small></button>
+      <button class="nav-btn" data-view="data"><span>▱</span><small>Dados</small></button>
+    </nav>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div>
+
+  <dialog id="modal">
+    <div id="modalContent"></div>
+  </dialog>
+
+  <script src="app.js"></script><script>if("serviceWorker" in navigator && location.protocol!=="file:"){navigator.serviceWorker.register("sw.js").catch(()=>{});}</script>
+</body>
+</html>

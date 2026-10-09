@@ -1,321 +1,360 @@
-const STORAGE_KEY = 'respiro-local-v1';
-const BACKUP_FORMAT = 'respiro-local-backup';
-const BACKUP_VERSION = 1;
+const KEY = "fio-data-v2";
 
-const defaultStrategies = [
-  { id:'bath', name:'Tomar um banho', category:'corpo', icon:'◒' },
-  { id:'taylor', name:'Ouvir Taylor Swift', category:'afetivo', icon:'♫' },
-  { id:'cats', name:'Brincar com os gatos', category:'afetivo', icon:'♡' },
-  { id:'write', name:'Escrever', category:'expressivo', icon:'✎' },
-  { id:'mom', name:'Ligar para a mãe', category:'afetivo', icon:'☎' },
-  { id:'friend', name:'Ligar para uma amiga', category:'afetivo', icon:'☏' },
-  { id:'senses', name:'5 sentidos', category:'sensorial', icon:'◉', guided:true }
-];
-const defaultTriggers = ['Barulho','Luz forte','Multidões','Cobrança','Mudança de rotina'];
-const emotions = [
-  ['ansiosa','◌','Ansiosa'], ['sobrecarregada','≋','Sobrecarregada'], ['triste','☹','Triste'],
-  ['irritada','⌁','Irritada'], ['medo','!','Com medo'], ['cansada','◡','Exausta'],
-  ['frustrada','↗','Frustrada'], ['sozinha','♡','Sozinha'], ['confusa','…','Confusa']
-];
+// Primeiro uso: o FIO começa vazio. Nenhuma tarefa é criada automaticamente.
+const EMPTY_DATA = { version: 2, projects: [] };
+let data = load();
+let view = "tasks";
+let selectedTask = null;
+let deferredInstallPrompt = null;
+let isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+let historyReady = false;
+let fioHistoryDepth = 0;
+let taskTab = "active";
 
-function makeInstallationId(){
-  if(window.crypto?.randomUUID) return crypto.randomUUID();
-  if(window.crypto?.getRandomValues){
-    const bytes=new Uint8Array(16); crypto.getRandomValues(bytes);
-    return [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
+function navigate(nextView, taskId=null, replace=false){
+  view = nextView;
+  if(taskId !== null) selectedTask = taskId;
+  const state = { fio:true, view, selectedTask, depth:fioHistoryDepth };
+  if(historyReady){
+    if(replace) history.replaceState({...state, fio:true, depth:fioHistoryDepth}, '', location.href);
+    else { history.pushState({...state, fio:true, depth:fioHistoryDepth+1}, '', location.href); fioHistoryDepth++; }
   }
-  return 'local-'+Date.now()+'-'+Math.random().toString(36).slice(2);
+  render();
 }
-function freshData(){
-  return {
-    schemaVersion: BACKUP_VERSION,
-    installationId: makeInstallationId(),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    strategies: defaultStrategies.map(x=>({...x})),
-    triggers: [],
-    history: []
-  };
-}
-function normalizeData(data){
-  const base=freshData();
-  const strategies=Array.isArray(data?.strategies)?data.strategies:base.strategies;
-  const cleanedStrategies=strategies.filter(x=>x?.id!=='pray' && x?.name!=='Orar');
-  const hasSenses=cleanedStrategies.some(x=>x?.id==='senses');
-  return {
-    schemaVersion: BACKUP_VERSION,
-    installationId: typeof data?.installationId==='string' && data.installationId ? data.installationId : base.installationId,
-    createdAt: data?.createdAt || base.createdAt,
-    updatedAt: new Date().toISOString(),
-    strategies: hasSenses ? cleanedStrategies : [...cleanedStrategies, {...defaultStrategies.find(x=>x.id==='senses')}],
-    triggers: Array.isArray(data?.triggers)?data.triggers.filter(x=>typeof x==='string'):[],
-    history: Array.isArray(data?.history)?data.history.slice(0,30):[]
-  };
-}
-const Store = {
-  key: STORAGE_KEY,
-  read(){
-    try {
-      const raw=localStorage.getItem(this.key);
-      if(raw) return normalizeData(JSON.parse(raw));
-      const migrated=this.migrateLegacy();
-      if(migrated) { this.write(migrated); return migrated; }
-      const data=freshData(); this.write(data); return data;
-    } catch { const data=freshData(); return data; }
-  },
-  write(data){
-    const normalized=normalizeData(data);
-    localStorage.setItem(this.key,JSON.stringify(normalized));
-    return normalized;
-  },
-  update(patch){
-    const current=this.read();
-    return this.write({...current,...patch,updatedAt:new Date().toISOString()});
-  },
-  addHistory(item){
-    const current=this.read();
-    current.history=[item,...current.history].slice(0,30);
-    this.write(current);
-  },
-  clear(){ localStorage.removeItem(this.key); },
-  exportData(){
-    const data=this.read();
-    return {format:BACKUP_FORMAT,version:BACKUP_VERSION,exportedAt:new Date().toISOString(),data};
-  },
-  validateBackup(payload){
-    return payload && payload.format===BACKUP_FORMAT && payload.data && Array.isArray(payload.data.strategies) && Array.isArray(payload.data.triggers) && Array.isArray(payload.data.history);
-  },
-  importData(payload){
-    if(!this.validateBackup(payload)) throw new Error('Arquivo de backup do Respiro inválido.');
-    return this.write(payload.data);
-  },
-  migrateLegacy(){
-    try {
-      const strategies=JSON.parse(localStorage.getItem('respiro-strategies-v2'));
-      const history=JSON.parse(localStorage.getItem('respiro-history-v2'));
-      const triggers=JSON.parse(localStorage.getItem('respiro-triggers-v1'));
-      if(!Array.isArray(strategies) && !Array.isArray(history) && !Array.isArray(triggers)) return null;
-      return normalizeData({strategies:Array.isArray(strategies)?strategies:undefined,history:Array.isArray(history)?history:undefined,triggers:Array.isArray(triggers)?triggers:undefined});
-    } catch { return null; }
-  }
-};
 
-let localData=Store.read();
-let breathTimer = null;
-let breathRunning = false;
-let sensesTimer = null;
-let state = {
-  route:'checkin', emotion:null, intensity:5, triggers:[],
-  strategies:localData.strategies, customTriggers:localData.triggers,
-  breathCycle:0, completedStrategy:'', currentStrategy:''
-};
-function syncLocalData(){
-  localData=Store.read();
-  state.strategies=localData.strategies;
-  state.customTriggers=localData.triggers;
+function goBack(fallback='tasks'){
+  if(historyReady && fioHistoryDepth > 0){
+    history.back();
+  } else {
+    navigate(fallback);
+  }
 }
-function saveStrategies(){ localData=Store.update({strategies:state.strategies}); }
-function saveTriggers(){ localData=Store.update({triggers:state.customTriggers}); }
-function allTriggers(){ return [...defaultTriggers,...state.customTriggers.filter(x=>!defaultTriggers.includes(x))]; }
-function saveHistory(item){ Store.addHistory(item); localData=Store.read(); }
-function historyData(){ return Store.read().history; }
-function toast(msg){ const el=document.getElementById('toast'); el.textContent=msg; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),1800); }
-function esc(s){ return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
-function stopBreathing(){ if(breathTimer){clearInterval(breathTimer);breathTimer=null;} breathRunning=false; }
-function stopSenses(){ if(sensesTimer){clearTimeout(sensesTimer);sensesTimer=null;} }
+
+window.addEventListener('popstate', event => {
+  const state = event.state;
+  if(state?.fio){
+    view = state.view || 'tasks';
+    selectedTask = state.selectedTask || null;
+    fioHistoryDepth = Math.max(0, Number(state.depth)||0);
+    render();
+  } else {
+    // Se o navegador não tiver um estado anterior do FIO, voltamos à página inicial do app.
+    navigate('tasks', null, true);
+  }
+});
+
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  isStandalone = true;
+  toast('FIO foi adicionado à tela inicial.');
+});
+
+const app = document.querySelector("#app");
+const modal = document.querySelector("#modal");
+const modalContent = document.querySelector("#modalContent");
+
+function load(){
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return structuredClone(EMPTY_DATA);
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.projects)) return structuredClone(EMPTY_DATA);
+    return parsed;
+  } catch(e){ return structuredClone(EMPTY_DATA); }
+}
+function save(){ localStorage.setItem(KEY, JSON.stringify(data)); }
+function esc(s=""){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function toast(msg){
+  const el=document.querySelector("#toast");
+  el.textContent=msg; el.classList.add("show");
+  setTimeout(()=>el.classList.remove("show"),2200);
+}
+function findTask(id){
+  for(const p of data.projects){
+    const t=p.tasks.find(t=>t.id===id);
+    if(t) return {p,t};
+  }
+}
+function progress(t){ return t.stages.filter(s=>s.done).length; }
+function allTasks(){ return data.projects.flatMap(p=>p.tasks); }
+function latestPausedTask(){
+  return allTasks()
+    .filter(t=>!t.completed && t.stopAt && t.stages.some(s=>!s.done))
+    .sort((a,b)=>(b.stopAt||0)-(a.stopAt||0))[0] || null;
+}
+function currentIndex(t){
+  const firstOpen=t.stages.findIndex(s=>!s.done);
+  if(firstOpen<0) return t.stages.length-1;
+  return Math.min(Math.max(Number.isInteger(t.current)?t.current:firstOpen,0),t.stages.length-1);
+}
 
 function render(){
-  stopBreathing();
-  stopSenses();
-  const app=document.getElementById('app');
-  const views={home:homeView,checkin:checkinView,'checkin-intensity':intensityView,regulate:regulateView,breath:breathView,senses:sensesView,done:doneView,task:taskView,triggers:triggersView,strategies:strategiesView,history:historyView,settings:settingsView};
-  app.innerHTML=(views[state.route]||homeView)();
-  bind();
-  document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.route===state.route || ['checkin','checkin-intensity','regulate'].includes(state.route)&&b.dataset.route==='home'));
+  if(view==="tasks") renderTasks();
+  if(view==="data") renderData();
+  if(view==="create") renderCreate();
+  if(view==="task") renderTask();
+  if(view==="resume") renderResume();
+  document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.view===view));
 }
 
-function homeView(){
- return `<section class="hero"><div class="flower"></div><div class="eyebrow">Seu espaço de cuidado</div><h1>Vamo comigo?</h1><p>Um passo de cada vez, no seu ritmo. Você pode começar de novo sempre que precisar.</p></section>
- <section class="card"><h2>Vamos entender como você está</h2><p class="muted">Escolha uma emoção e encontre algo que possa ajudar neste momento.</p><button class="primary-btn" data-action="start">Começar</button></section>`;
+function renderTasks(){
+  const all=allTasks();
+  const active=all.filter(t=>t.completed!==true);
+  const completed=all.filter(t=>t.completed===true);
+  const shown=taskTab==="completed"?completed:active;
+  app.innerHTML=`
+    <div class="decor"></div>
+    <div class="topline">
+      <div><div class="eyebrow">SEU ESPAÇO DE TRABALHO</div><h1>Projetos e tarefas</h1></div>
+      <button class="plus-link" id="newTask">＋ Nova tarefa</button>
+    </div>
+    <div class="task-tabs" role="tablist" aria-label="Filtrar tarefas">
+      <button class="task-tab ${taskTab==='active'?'selected':''}" id="activeTab" role="tab" aria-selected="${taskTab==='active'}">Em andamento <span>${active.length}</span></button>
+      <button class="task-tab ${taskTab==='completed'?'selected':''}" id="completedTab" role="tab" aria-selected="${taskTab==='completed'}">Concluídas <span>${completed.length}</span></button>
+    </div>
+    ${shown.length ? shown.map(t=>{
+      const pr=progress(t), total=t.stages.length, idx=currentIndex(t);
+      return `<article class="project-card ${t.completed?'completed-card':'active'}" data-id="${t.id}">
+        <div class="project-head">
+          <div>
+            <div class="eyebrow">${t.completed?'TAREFA CONCLUÍDA':'TAREFA'}</div>
+            <div class="project-name">${esc(t.name)}</div>
+            <div class="progress-text">${pr}/${total} etapas concluídas${t.completedAt?` · concluída em ${new Date(t.completedAt).toLocaleDateString('pt-BR')}`:''}</div>
+          </div>
+          <div class="mini-orbit mini-thread" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+        </div>
+        <div class="stage-list">
+          ${t.stages.map((s,i)=>`<div class="stage-row ${s.done?'done':''} ${i===idx&&!s.done?'current':''}">
+            <span class="status">${s.done?'✓':''}</span><span>${esc(s.name)}</span>
+            <span class="stage-state">${s.done?'concluída':i===idx&&!t.completed?'em andamento':''}</span>
+          </div>`).join("")}
+        </div>
+        <div class="card-actions"><button class="text-btn open-task">${t.completed?'Ver tarefa':'Abrir tarefa →'}</button>${t.completed?'<button class="text-btn reopen-task">Reabrir tarefa</button>':'<button class="text-btn clone-task">Clonar</button>'}<button class="text-btn danger-text delete-task">Excluir</button></div>
+      </article>`;
+    }).join("") : `<div class="empty"><div class="drawing">FIO</div><h2>${taskTab==='completed'?'Nenhuma tarefa concluída ainda':'Por onde começamos?'}</h2><p class="muted">${taskTab==='completed'?'Quando você concluir uma tarefa, ela ficará guardada aqui.':'Crie uma tarefa e divida o caminho em pequenos passos. O FIO não traz tarefas prontas.'}</p>${taskTab==='active'?'<button class="primary" id="newTaskEmpty">Criar primeira tarefa</button>':''}</div>`}
+  `;
+  document.querySelector("#newTask")?.addEventListener("click",()=>navigate("create"));
+  document.querySelector("#newTaskEmpty")?.addEventListener("click",()=>navigate("create"));
+  document.querySelector("#activeTab").onclick=()=>{taskTab="active";renderTasks()};
+  document.querySelector("#completedTab").onclick=()=>{taskTab="completed";renderTasks()};
+  document.querySelectorAll(".open-task").forEach(b=>b.addEventListener("click",e=>{const id=e.target.closest(".project-card").dataset.id;navigate("task",id)}));
+  document.querySelectorAll(".clone-task").forEach(b=>b.addEventListener("click",e=>{const id=e.target.closest(".project-card").dataset.id,found=findTask(id);if(!found)return;cloneTask(found.t,found.p,true)}));
+  document.querySelectorAll(".reopen-task").forEach(b=>b.addEventListener("click",e=>{const id=e.target.closest(".project-card").dataset.id,found=findTask(id);if(!found)return;found.t.completed=false;delete found.t.completedAt;taskTab="active";save();renderTasks();toast("Tarefa reaberta.")}));
+  document.querySelectorAll(".delete-task").forEach(b=>b.addEventListener("click",e=>{const id=e.target.closest(".project-card").dataset.id,found=findTask(id);if(!found)return;deleteTask(found.t,found.p,false)}));
 }
 
-function checkinView(){
- const selected=state.emotion;
- return `<section class="checkin-transition"><div class="eyebrow">Vamos começar por você</div><h1>Como você está se sentindo?</h1><p class="screen-copy">Escolha o que mais se aproxima do que está acontecendo agora.</p>
- <div class="emotion-grid">${emotions.map(([id,face,label])=>`<button type="button" class="emotion ${selected===id?'selected':''}" data-emotion="${id}"><span class="face">${face}</span><small>${label}</small></button>`).join('')}</div>
- <p class="muted tiny">Depois dessa escolha, vamos seguir para os possíveis gatilhos.</p></section>`;
+function renderCreate(){
+  app.innerHTML=`
+    <button class="back-btn" id="back">← Voltar</button>
+    <div class="topline compact-topline"><div><div class="eyebrow">NOVA TAREFA</div><h1>O que você precisa fazer?</h1></div></div>
+    <form class="form compact-form" id="createForm">
+      <div><label for="taskName">Nome da tarefa ou projeto</label><input id="taskName" required placeholder="Digite o nome"></div>
+      <div><label>Etapas</label><p class="field-hint">Adicione apenas as etapas que fizerem sentido para esta tarefa.</p><div class="stage-editor" id="stageEditor"></div><button type="button" class="text-btn add-stage-btn" id="addStage">＋ adicionar etapa</button></div>
+      <div class="form-actions"><button type="button" class="secondary" id="cancelCreate">Cancelar</button><button class="primary">Criar tarefa</button></div>
+    </form>`;
+  document.querySelector("#back").onclick=document.querySelector("#cancelCreate").onclick=()=>goBack("tasks");
+  document.querySelector("#addStage").onclick=()=>{const ed=document.querySelector("#stageEditor");ed.insertAdjacentHTML("beforeend",stageInput("",document.querySelectorAll(".stage-edit").length));ed.lastElementChild.querySelector("input").focus()};
+  document.querySelector("#createForm").onsubmit=e=>{e.preventDefault();const name=document.querySelector("#taskName").value.trim();const stages=[...document.querySelectorAll(".stage-edit input")].map(x=>x.value.trim()).filter(Boolean).map(n=>({id:crypto.randomUUID(),name:n,done:false}));if(!name){toast("Digite o nome da tarefa.");return}if(!stages.length){toast("Adicione pelo menos uma etapa.");return}const task={id:crypto.randomUUID(),name,stages,current:0,stopNote:"",stopAt:null};data.projects.unshift({id:crypto.randomUUID(),name,createdAt:Date.now(),tasks:[task]});save();selectedTask=task.id;navigate("task", task.id, true)};
+}
+function stageInput(value,i){return `<div class="stage-edit"><input value="${esc(value)}" placeholder="Etapa ${i+1}"><button type="button" class="small-btn" onclick="this.parentElement.remove()">×</button></div>`}
+
+function renderTask(){
+  const found=findTask(selectedTask); if(!found){navigate("tasks", null, true);return}
+  const {t}=found, current=currentIndex(t), n=t.stages.length;
+  app.innerHTML=`
+    <section class="hero-task">
+      <div class="task-topline">
+        <button class="back-btn" id="back">← Tarefas</button>
+        <button class="home-task-btn" id="taskHome" aria-label="Ir para o início">⌂ Início</button>
+      </div>
+      <div class="task-title"><div class="eyebrow">PROJETO</div><h1>${esc(t.name)}</h1><div class="progress-text" id="stageProgress">Etapa ${Math.min(current+1,n)}/${n} · ${progress(t)} concluídas</div></div>
+
+      <div class="pause-hero">
+        <div>
+          <div class="eyebrow">PONTO DE PARADA</div>
+          <strong>Parei aqui</strong>
+          <span>Guarde onde você está para retomar depois.</span>
+        </div>
+        <div class="task-main-actions"><button class="pause pause-hero-btn" id="pause">Ⅱ&nbsp; Parei aqui</button><button class="complete-task-btn" id="completeTask">✓ Concluir tarefa</button></div>
+      </div>
+
+      <div class="task-focus compact-focus">
+        <div class="eyebrow">VOCÊ ESTÁ AQUI</div>
+        <div class="focus-name">${esc(t.stages[current].name)}</div>
+        <div class="focus-next">${current<n-1 ? 'Próximo: '+esc(t.stages[current+1].name) : 'Última etapa da tarefa'}</div>
+      </div>
+
+      <div class="timeline-wrap">
+        <div class="thread-spiral" aria-hidden="true"><span class="thread-segment s1"></span><span class="thread-segment s2"></span><span class="thread-segment s3"></span><span class="thread-segment s4"></span></div>
+        <div class="timeline">
+          ${t.stages.map((s,i)=>`<button class="timeline-item ${s.done?'done':''} ${i===current&&!s.done?'current':''}" data-index="${i}" aria-label="${esc(s.name)}">
+            <span class="timeline-node">${s.done?'✓':i+1}</span>
+            <span class="timeline-copy"><strong>${esc(s.name)}</strong><small>${s.done?'concluída':i===current?'você está aqui':'próxima etapa'}</small></span>
+          </button>`).join("")}
+        </div>
+      </div>
+      ${t.stopAt ? `<div class="last-stop"><div class="eyebrow">ÚLTIMO PONTO DE PARADA</div><div>${esc(t.stopNote || 'Ponto de parada registrado.')}</div></div>` : ''}
+    </section>`;
+
+  document.querySelector("#back").onclick=()=>goBack("tasks");
+  document.querySelector("#taskHome").onclick=()=>navigate("tasks");
+  document.querySelectorAll(".timeline-item").forEach(el=>el.onclick=()=>{
+    const index=Number(el.dataset.index);
+    if(index===current && !t.stages[index].done){
+      t.stages[index].done=true;
+      const next=t.stages.findIndex((s,i)=>i>index&&!s.done);
+      t.current=next>=0?next:t.stages.length-1;
+      save();render();toast("Etapa concluída. O fio avançou.");
+      return;
+    }
+    t.current=index;save();render();
+  });
+  document.querySelector("#pause").onclick=()=>openPause(t,current);
+  document.querySelector("#completeTask").onclick=()=>completeTask(t);
 }
 
-function intensityView(){
- const triggers=allTriggers();
- return `<div class="eyebrow">Vamos entender um pouco mais</div><h2>O que pode ter contribuído?</h2><p class="screen-copy">Marque os gatilhos que fizerem sentido. Você também pode avaliar a intensidade.</p>
- <div class="card"><div class="intensity-number">${state.intensity}</div><div class="scale">${Array.from({length:10},(_,i)=>`<button type="button" data-intensity="${i+1}" class="${state.intensity===i+1?'active':''}">${i+1}</button>`).join('')}</div><div class="scale-labels"><span>Leve</span><span>Intenso</span></div></div>
- <div class="card trigger-card"><div class="section-heading"><div><h3>O que pode ter contribuído para isso?</h3><p>Você pode escolher mais de um.</p></div><button type="button" class="small-add" data-action="add-trigger">+ adicionar</button></div>
- <div class="trigger-list">${triggers.map(t=>`<button type="button" class="chip ${state.triggers.includes(t)?'selected':''}" data-trigger="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>
- <button class="primary-btn" data-action="next-strategy">Encontrar algo que ajude →</button>`;
+function completeTask(t){
+  const remaining=t.stages.filter(s=>!s.done).length;
+  const message=remaining>0
+    ? `Ainda há ${remaining} etapa(s) não concluída(s). Deseja concluir a tarefa inteira mesmo assim?`
+    : `Marcar “${t.name}” como concluída?`;
+  if(!confirm(message)) return;
+  t.completed=true;
+  t.completedAt=Date.now();
+  t.stopAt=null;
+  save();
+  taskTab="completed";
+  navigate("tasks",null);
+  toast("Tarefa concluída e guardada em Concluídas.");
 }
 
-function regulateView(){
- return `<div class="eyebrow">Vamos encontrar algo que ajude</div><h2>Vamo comigo?</h2><p class="screen-copy">Escolha uma opção para este momento. Você pode experimentar outra depois.</p>
- <div class="featured-strategies"><button type="button" class="featured-strategy breath-feature" data-action="breath-open"><span class="featured-icon">◌</span><span><strong>Respiração guiada</strong><small>5 ciclos para inspirar, segurar e soltar com calma.</small></span><b>›</b></button><button type="button" class="featured-strategy senses-feature" data-use="senses"><span class="featured-icon">✧</span><span><strong>5 sentidos</strong><small>Um exercício para voltar ao momento presente.</small></span><b>›</b></button></div>
- <div class="other-options"><div class="section-heading"><div><h3>Outras estratégias</h3><p>Escolha o que fizer sentido para você.</p></div><button type="button" class="small-add" data-action="manage">editar</button></div><div class="strategy-list">${state.strategies.filter(s=>s.id!=='senses').map(s=>`<button type="button" class="strategy strategy-button" data-use="${esc(s.id)}"><div class="strategy-icon">${s.icon||'♡'}</div><div class="strategy-copy"><strong>${esc(s.name)}</strong><small>${labelCategory(s.category)}</small></div><span class="strategy-arrow">›</span></button>`).join('')}</div></div>`;
+function cloneTask(t,p,fromList=false){
+  const copy=structuredClone(t);copy.id=crypto.randomUUID();copy.name=`${t.name} — cópia`;copy.stopAt=null;copy.stopNote="";copy.stages=copy.stages.map(s=>({...s,id:crypto.randomUUID(),done:false}));copy.current=0;p.tasks.push(copy);save();
+  if(fromList){render();toast("Tarefa clonada.")}else{selectedTask=copy.id;navigate("task", copy.id);toast("Tarefa clonada.")}
+}
+function deleteTask(t,p,fromTask=true){
+  if(!confirm(`Excluir “${t.name}”? Esta ação não pode ser desfeita.`)) return;
+  p.tasks=p.tasks.filter(x=>x.id!==t.id);data.projects=data.projects.filter(project=>project.tasks.length);save();selectedTask=null;navigate("tasks",null);toast("Tarefa excluída.");
 }
 
-function breathView(){
- return `<div class="breath-page"><div class="eyebrow">Respiração guiada</div><h2>Respira comigo</h2><p class="screen-copy">Acompanhe a bolinha. São 5 ciclos, sem pressa.</p><div class="breath-stage breath-stage-large"><div id="breathCircle" class="breath-circle"><span id="breathPhase">Quando quiser</span><small id="breathCount">4s</small></div></div><div class="breath-instruction" id="breathInstruction">Inspire, segure e solte o ar no ritmo da animação.</div><div class="cycle-count" id="cycleCount">Ciclo 1 de 5</div><button class="primary-btn" id="breathStart" data-action="breath">Começar</button><button class="secondary-btn" data-action="breath-stop">Voltar às estratégias</button></div>`;
-}
-function taskView(){
- return `<section class="done-screen task-screen"><div class="done-flower">♡</div><div class="eyebrow">Uma coisa de cada vez</div><h1>${esc(state.currentStrategy||'Sua estratégia')}</h1><p class="screen-copy">Agora, experimente essa estratégia no seu ritmo. Quando terminar, volte aqui para decidir o que precisa.</p><button class="primary-btn" data-action="task-finished">Já fiz isso</button><button class="secondary-btn" data-action="another-task">Escolher outra estratégia</button></section>`;
-}
-function doneView(){
- return `<section class="done-screen"><div class="done-flower">✿</div><div class="eyebrow">Um passo de cada vez</div><h1>Como você está agora?</h1><p class="screen-copy">Você concluiu: <strong>${esc(state.completedStrategy||'uma estratégia')}</strong>.</p><button class="primary-btn" data-action="feeling-ok">Estou bem</button><button class="secondary-btn" data-action="another-task">Quero experimentar outra coisa</button><button class="text-btn" data-action="continue">Quero continuar nesta estratégia</button></section>`;
-}
-
-function sensesView(){
- const steps=[
-  {title:'Visão',count:'5 coisas que você vê',copy:'Olhe ao seu redor e encontre 5 coisas que você consegue ver.',icon:'👁️',visual:'<div class="sense-dots"><i></i><i></i><i></i><i></i><i></i></div>'},
-  {title:'Tato',count:'4 coisas que você sente',copy:'Perceba 4 sensações no seu corpo ou ao seu redor.',icon:'✋',visual:'<div class="sense-wave sense-wave-tact"></div>'},
-  {title:'Audição',count:'3 coisas que você ouve',copy:'Pare por alguns segundos e perceba 3 sons ao seu redor.',icon:'👂',visual:'<div class="sound-waves"><span>)))</span><b>◯</b><span>(((</span></div>'},
-  {title:'Olfato',count:'2 coisas que você cheira',copy:'Perceba 2 cheiros ao seu redor.<br><em>Se não encontrar nenhum cheiro, tudo bem. Perceba apenas o ar entrando pelo nariz.</em>',icon:'👃',visual:'<div class="smell-waves"><i></i><i></i></div>'},
-  {title:'Paladar',count:'1 coisa que você saboreia',copy:'Perceba o gosto que está na sua boca.',icon:'👅',visual:'<div class="sense-pulse"></div>'}
- ];
- const step=state.sensesStep??0;
- if(step===-1) return `<div class="sense-intro"><div class="eyebrow">Uma pausa no presente</div><div class="sense-big-icon">◉</div><h2>5 sentidos</h2><p class="screen-copy">Um exercício simples para voltar ao momento presente.</p><button class="primary-btn" data-action="senses-start">Começar</button></div>`;
- if(step>=5) return `<div class="sense-intro sense-final"><div class="eyebrow">Terminamos</div><div class="sense-big-icon final-pulse">◉</div><h2>Você está aqui.</h2><p class="screen-copy">Agora, neste momento.</p><button class="primary-btn" data-action="senses-done">Concluir</button></div>`;
- const x=steps[step];
- return `<div class="sense-screen"><div class="eyebrow">${step+1} de 5</div><div class="sense-progress">${steps.map((_,i)=>`<i class="${i<=step?'active':''}"></i>`).join('')}</div><div class="sense-icon">${x.icon}</div><h2>${x.title}</h2><h3>${x.count}</h3><p class="screen-copy">${x.copy}</p><div class="sense-visual">${x.visual}</div><button class="primary-btn" data-action="senses-next">Pronto →</button></div>`;
+function openPause(t,current){
+  modalContent.innerHTML=`<div class="modal">
+    <div class="eyebrow">PAREI AQUI</div><h2>Deixe um bilhete para depois.</h2>
+    <p>O aplicativo já sabe qual é a etapa atual. Escreva só o que você não quer precisar reconstruir quando voltar.</p>
+    <label>O que é importante lembrar?</label>
+    <textarea id="pauseNote" placeholder="Ex.: a medida está na planta impressa.">${esc(t.stopNote||"")}</textarea>
+    <div class="modal-actions"><button class="secondary" id="closeModal">Cancelar</button><button class="primary" id="savePause">Salvar e sair</button></div>
+  </div>`;
+  modal.showModal();
+  document.querySelector("#closeModal").onclick=()=>modal.close();
+  document.querySelector("#savePause").onclick=()=>{
+    t.current=current;
+    t.stopNote=document.querySelector("#pauseNote").value.trim();
+    t.stopAt=Date.now();
+    save();modal.close();navigate("resume", t.id);
+  };
 }
 
-function triggersView(){
- const triggers=allTriggers();
- return `<div class="eyebrow">Autoconhecimento</div><div class="top-actions"><div><h2>Seus gatilhos</h2><p class="screen-copy">Gatilhos que você já identificou podem ajudar a perceber padrões ao longo do tempo.</p></div><button type="button" class="inline-btn" data-action="add-trigger">+ Adicionar</button></div>
- <div class="card"><div class="trigger-list">${triggers.map(t=>`<button type="button" class="chip selected">${esc(t)}</button>`).join('')}</div><div class="callout" style="margin-top:16px">Esses gatilhos são informativos e podem ser ajustados conforme o acompanhamento.</div></div>`;
-}
-function strategiesView(){
- return `<div class="top-actions"><div><div class="eyebrow">Personalização</div><h2>Suas estratégias</h2></div><button type="button" class="inline-btn" data-action="add">+ Adicionar</button></div><p class="screen-copy">Mantenha aqui as coisas que realmente ajudam você a se regular.</p>
- <div class="strategy-list">${state.strategies.length?state.strategies.map(s=>`<div class="strategy"><div class="strategy-icon">${s.icon||'♡'}</div><div class="strategy-copy"><strong>${esc(s.name)}</strong><small>${labelCategory(s.category)}</small></div><button type="button" class="strategy-action" data-delete="${esc(s.id)}">Excluir</button></div>`).join(''):'<div class="empty">Nenhuma estratégia cadastrada ainda.</div>'}</div>`;
-}
-function historyView(){
- const h=historyData();
- return `<div class="eyebrow">Acompanhamento</div><h2>Histórico</h2><p class="screen-copy">Seus check-ins ficam registrados neste dispositivo e não são sincronizados.</p><div class="card">${h.length?h.map(x=>`<div class="history-item"><strong>${esc(x.emotion)} · intensidade ${x.intensity}/10</strong><small>${esc(x.date)}${x.trigger?' · gatilhos: '+esc(x.trigger):''}${x.strategy?' · estratégia: '+esc(x.strategy):''}</small></div>`).join(''):'<div class="empty">Ainda não há registros. Faça seu primeiro check-in.</div>'}</div>`;
-}
-function settingsView(){
- const data=Store.read();
- const created=new Date(data.createdAt).toLocaleDateString('pt-BR');
- return `<div class="eyebrow">Configurações</div><h2>Seus dados</h2>
- <div class="card privacy-card"><div class="privacy-icon">⌂</div><strong>Seus dados ficam armazenados neste dispositivo.</strong><p>Não são sincronizados com outros aparelhos e não são enviados para o Vercel ou GitHub.</p><p class="muted">Criado em ${created}. O identificador local serve apenas para diferenciar este conjunto de dados e não é uma forma de login.</p></div>
- <div class="card settings-actions">
- <button class="secondary-btn" data-action="export-data">Exportar meus dados</button>
- <button class="secondary-btn" data-action="import-data">Importar meus dados</button>
- <button class="danger-btn" data-action="clear-data">Apagar meus dados</button>
- </div>
- <div class="card callout"><strong>Sobre este protótipo</strong><br>Se os dados do navegador forem apagados, o navegador for redefinido ou o aparelho for trocado sem um backup, seus registros podem ser perdidos.</div>`;
-}
-
-function labelCategory(c){ return ({corpo:'Corpo',sensorial:'Sensorial',afetivo:'Afetivo',expressivo:'Expressivo',espiritual:'Espiritual',outro:'Outra'})[c]||'Estratégia'; }
-function prettyEmotion(id){ const x=emotions.find(e=>e[0]===id); return x?x[2]:'Não informado'; }
-
-function bind(){
- document.querySelectorAll('[data-route]').forEach(b=>b.onclick=()=>{state.route=b.dataset.route;render();});
- document.querySelectorAll('[data-emotion]').forEach(b=>b.onclick=()=>{state.emotion=b.dataset.emotion;render();setTimeout(()=>{state.route='checkin-intensity';render();},320);});
- document.querySelectorAll('[data-intensity]').forEach(b=>b.onclick=()=>{state.intensity=+b.dataset.intensity;render();});
- document.querySelectorAll('[data-trigger]').forEach(b=>b.onclick=()=>{const t=b.dataset.trigger;state.triggers=state.triggers.includes(t)?state.triggers.filter(x=>x!==t):[...state.triggers,t];render();});
- document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>handleAction(b.dataset.action));
- document.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>{const s=state.strategies.find(x=>x.id===b.dataset.use);if(s){if(s.id==='senses'){state.sensesStep=-1;state.route='senses';render();return;}state.currentStrategy=s.name;state.route='task';render();}});
- document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>deleteStrategy(b.dataset.delete));
-}
-function handleAction(a){
- if(a==='start'){state.route='checkin';render();return;}
- if(a==='next-intensity'){if(!state.emotion)return;state.route='checkin-intensity';render();return;}
- if(a==='next-strategy'){state.route='regulate';render();return;}
- if(a==='manage'){state.route='strategies';render();return;}
- if(a==='senses-start'){state.sensesStep=0;render();return;}
- if(a==='senses-next'){state.sensesStep=(state.sensesStep??0)+1;render();if(state.sensesStep===5){sensesTimer=setTimeout(()=>{const b=document.querySelector('[data-action=\"senses-done\"]');if(b)b.focus();},2500);}return;}
- if(a==='senses-done'){state.completedStrategy='5 sentidos';saveHistory({emotion:prettyEmotion(state.emotion),intensity:state.intensity,trigger:state.triggers.join(', '),strategy:'5 sentidos',date:new Date().toLocaleString('pt-BR')});state.route='done';state.sensesStep=-1;render();return;}
- if(a==='add')openStrategyModal();
- if(a==='add-trigger')openTriggerModal();
- if(a==='breath'){startBreathing();return;}
- if(a==='breath-open'){state.route='breath';render();return;}
- if(a==='breath-finish'){state.completedStrategy='Respiração guiada';saveHistory({emotion:prettyEmotion(state.emotion),intensity:state.intensity,trigger:state.triggers.join(', '),strategy:'Respiração guiada',date:new Date().toLocaleString('pt-BR')});state.route='done';render();return;}
- if(a==='breath-stop'){stopBreathing();state.route='regulate';render();return;}
- if(a==='task-finished'){state.completedStrategy=state.currentStrategy;saveHistory({emotion:prettyEmotion(state.emotion),intensity:state.intensity,trigger:state.triggers.join(', '),strategy:state.currentStrategy,date:new Date().toLocaleString('pt-BR')});state.route='done';render();return;}
- if(a==='feeling-ok'){state.route='home';state.emotion=null;state.triggers=[];state.intensity=5;state.completedStrategy='';render();return;}
- if(a==='another-task'){state.route='regulate';render();return;}
- if(a==='continue'){if(state.completedStrategy==='5 sentidos'){state.route='senses';state.sensesStep=-1;}else if(state.completedStrategy==='Respiração guiada'){state.route='breath';}else{state.currentStrategy=state.completedStrategy;state.route='task';}render();return;}
- if(a==='settings'){state.route='settings';render();return;}
- if(a==='export-data'){exportData();return;}
- if(a==='import-data'){document.getElementById('importFile').click();return;}
- if(a==='clear-data'){clearLocalData();return;}
+function renderResume(){
+  const found=findTask(selectedTask);if(!found){navigate("tasks", null, true);return}
+  const {t}=found, current=currentIndex(t);
+  app.innerHTML=`<section class="resume">
+    <div class="resume-topline"><button class="back-btn" id="resumeBack">← Tarefas</button><button class="home-task-btn" id="resumeHome">⌂ Início</button></div>
+    <div class="resume-kicker">RETOMADA</div>
+    <h1>Você estava aqui.</h1>
+    <div class="resume-project">${esc(t.name)}</div>
+    <div class="resume-note">
+      <div class="resume-note-label">▤ &nbsp; O que você deixou anotado</div>
+      <div class="resume-note-text">${esc(t.stopNote||"Você não deixou uma observação desta vez.")}</div>
+    </div>
+    <div class="resume-next"><span>PRÓXIMO PASSO</span><strong>${esc(t.stages[current]?.name||"Retomar tarefa")}</strong></div>
+    <div class="timeline resume-timeline">
+      ${t.stages.map((s,i)=>`<div class="timeline-item static ${s.done?'done':''} ${i===current&&!s.done?'current':''}">
+        <span class="timeline-node">${s.done?'✓':i+1}</span>
+        <span class="timeline-copy"><strong>${esc(s.name)}</strong><small>${s.done?'concluída':i===current?'você está aqui':''}</small></span>
+      </div>`).join("")}
+    </div>
+    <div class="task-actions resume-actions"><button class="primary" id="continue">Continuar</button><button class="secondary" id="editStop">Editar ponto de parada</button></div>
+  </section>`;
+  document.querySelector("#resumeBack").onclick=()=>goBack("tasks");
+  document.querySelector("#resumeHome").onclick=()=>navigate("tasks");
+  document.querySelector("#continue").onclick=()=>navigate("task",t.id);
+  document.querySelector("#editStop").onclick=()=>openPause(t,current);
 }
 
-function startBreathing(){
- const circle=document.getElementById('breathCircle'),phase=document.getElementById('breathPhase'),count=document.getElementById('breathCount'),instruction=document.getElementById('breathInstruction'),button=document.getElementById('breathStart'),cycleLabel=document.getElementById('cycleCount');
- if(!circle||breathRunning)return;
- breathRunning=true;button.textContent='Respiração em andamento';button.disabled=true;
- const phases=[{name:'Inspire',seconds:4,from:.72,to:1.08,text:'Puxe o ar devagar pelo nariz.'},{name:'Segure',seconds:4,from:1.08,to:1.08,text:'Segure suavemente, sem forçar.'},{name:'Solte',seconds:4,from:1.08,to:.72,text:'Solte o ar devagar pela boca.'}];
- const phaseMs=4000,cycleMs=12000,totalMs=cycleMs*5,startAt=Date.now();
- function tick(){
-   const elapsed=Date.now()-startAt;
-   if(elapsed>=totalMs){stopBreathing();if(phase)phase.textContent='Concluído';if(count)count.textContent='';if(circle)circle.style.transform='scale(.78)';if(instruction)instruction.textContent='Você terminou os 5 ciclos. Perceba como está se sentindo.';if(button){button.textContent='Concluir';button.disabled=false;button.dataset.action='breath-finish';}if(cycleLabel)cycleLabel.textContent='5 de 5 ciclos';return;}
-   const cycle=Math.floor(elapsed/cycleMs),within=elapsed%cycleMs,phaseIndex=Math.floor(within/phaseMs),phaseElapsed=(within%phaseMs)/phaseMs,p=phases[phaseIndex];
-   const scale=p.from+(p.to-p.from)*phaseElapsed;
-   if(phase)phase.textContent=p.name;if(count)count.textContent=`${Math.max(1,Math.ceil(p.seconds-(within%phaseMs)/1000))}s`;if(circle)circle.style.transform=`scale(${scale})`;if(instruction)instruction.textContent=p.text;if(cycleLabel)cycleLabel.textContent=`Ciclo ${cycle+1} de 5`;
- }
- tick();breathTimer=setInterval(tick,100);
+function renderData(){
+  app.innerHTML=`<section class="data-page">
+    <div class="eyebrow">SEUS DADOS</div><h1>Dados e backup</h1>
+    <p class="muted">O FIO não precisa de conta, login ou banco de dados externo.</p>
+    <div class="data-section"><h3>Exportar seus dados</h3><p>Os dados ficam armazenados localmente no navegador, no armazenamento/cache local do dispositivo. Se você limpar os dados ou o cache do navegador, eles podem ser apagados. <strong>É uma boa ideia fazer um backup de vez em quando.</strong></p><button class="primary" id="export">Exportar meus dados</button></div>
+    <div class="data-section"><h3>Importar dados</h3><p>Escolha um backup que você já tenha exportado. Normalmente ele estará na pasta <strong>Downloads</strong> do computador ou celular. O nome será parecido com <strong>fio-backup-2026-10-06.json</strong>.</p><label class="file-label">Escolher arquivo JSON<input id="import" type="file" accept="application/json,.json"></label></div>
+    <div class="data-section" id="installSection">
+      <h3>Usar como aplicativo</h3>
+      <p>O FIO pode ser colocado na tela inicial do celular com um ícone próprio. Depois disso, ele abre em uma janela própria, sem a aparência de uma página comum do navegador.</p>
+      <div id="installArea"></div>
+    </div>
+    <div class="data-section" id="privacySection"><h3>Privacidade</h3><p>O FIO foi pensado para funcionar localmente. Esta versão não envia seus projetos para um servidor.</p></div>
+    <div class="data-section"><button class="secondary" id="reset">Apagar todos os dados</button></div>
+  </section>`;
+  document.querySelector("#export").onclick=()=>{
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob), a=document.createElement("a");
+    a.href=url;a.download=`fio-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);toast("Backup exportado.");
+  };
+  document.querySelector("#import").onchange=e=>{
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=()=>{
+      try{
+        const imported=JSON.parse(reader.result);
+        if(!imported||!Array.isArray(imported.projects))throw new Error();
+        data={version:2,projects:imported.projects};save();navigate("tasks", null);toast("Dados importados com sucesso.");
+      }catch{toast("Esse arquivo não parece ser um backup do FIO.")}
+    };reader.readAsText(file);
+  };
+  const installArea=document.querySelector("#installArea");
+  if(isStandalone){
+    installArea.innerHTML='<p class="install-status">✓ O FIO já está instalado como aplicativo neste dispositivo.</p>';
+  } else if(deferredInstallPrompt){
+    installArea.innerHTML='<button class="primary" id="installApp">Adicionar FIO à tela inicial</button>';
+    document.querySelector("#installApp").onclick=async()=>{
+      deferredInstallPrompt.prompt();
+      const choice=await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt=null;
+      if(choice.outcome==="accepted") toast("Instalação iniciada.");
+    };
+  } else {
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    installArea.innerHTML=ios
+      ? '<div class="install-guide"><strong>No iPhone/iPad:</strong> toque em <strong>Compartilhar</strong> no Safari e escolha <strong>Adicionar à Tela de Início</strong>.</div>'
+      : '<div class="install-guide"><strong>No Android:</strong> abra o menu do navegador (⋮) e procure <strong>Adicionar à tela inicial</strong> ou <strong>Instalar aplicativo</strong>.</div>';
+  }
+
+  document.querySelector("#reset").onclick=()=>{
+    if(confirm("Apagar todos os projetos e tarefas? Esta ação não pode ser desfeita.")){data=structuredClone(EMPTY_DATA);save();navigate("tasks", null);toast("Dados apagados.")}
+  };
 }
 
-function deleteStrategy(id){const item=state.strategies.find(s=>s.id===id);if(!item)return;if(!confirm(`Excluir “${item.name}”?`))return;state.strategies=state.strategies.filter(s=>s.id!==id);saveStrategies();render();toast('Estratégia excluída');}
-
-function openStrategyModal(){
- const modal=document.getElementById('modal');modal.classList.remove('hidden');
- document.getElementById('modalTitle').textContent='Nova estratégia';document.getElementById('modalHelp').textContent='Adicione algo que costuma ajudar você a se regular.';
- document.getElementById('strategyFields').style.display='block';document.getElementById('triggerFields').style.display='none';document.getElementById('itemName').value='';document.getElementById('itemName').placeholder='Ex.: Caminhar um pouco';document.getElementById('itemName').focus();
-}
-function openTriggerModal(){
- const modal=document.getElementById('modal');modal.classList.remove('hidden');
- document.getElementById('modalTitle').textContent='Adicionar gatilho';document.getElementById('modalHelp').textContent='Registre algo que você percebe que pode contribuir para a sobrecarga.';
- document.getElementById('strategyFields').style.display='none';document.getElementById('triggerFields').style.display='block';document.getElementById('itemName').value='';document.getElementById('itemName').placeholder='Ex.: cheiro forte';document.getElementById('itemName').focus();
-}
-function closeModal(){document.getElementById('modal').classList.add('hidden');document.getElementById('itemName').value='';}
-
-document.getElementById('modalClose').onclick=closeModal;
-document.getElementById('saveItem').onclick=()=>{
- const name=document.getElementById('itemName').value.trim();if(!name){toast('Digite alguma coisa');return;}
- if(document.getElementById('triggerFields').style.display!=='none'){
-   if(!state.customTriggers.includes(name)&&!defaultTriggers.includes(name)){state.customTriggers.push(name);saveTriggers();}
-   closeModal();render();toast('Gatilho adicionado');return;
- }
- const cat=document.getElementById('itemCategory').value;state.strategies.push({id:'custom-'+Date.now(),name,category:cat,icon:'♡'});saveStrategies();closeModal();render();toast('Estratégia adicionada');
-};
-
-function exportData(){
- const payload=Store.exportData();
- const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
- const url=URL.createObjectURL(blob); const a=document.createElement('a');
- const date=new Date().toISOString().slice(0,10);
- a.href=url; a.download=`respiro-backup-${date}.json`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
- toast('Backup exportado');
-}
-async function importDataFromFile(file){
- try{
-   const payload=JSON.parse(await file.text());
-   if(!Store.validateBackup(payload)) throw new Error('Arquivo inválido');
-   if(!confirm('Importar este backup substituirá os dados atuais deste Respiro. Continuar?')) return;
-   Store.importData(payload); syncLocalData(); state.emotion=null; state.triggers=[]; state.intensity=5; state.route='home'; render(); toast('Dados importados');
- }catch{ toast('Não foi possível importar esse arquivo'); }
-}
-function clearLocalData(){
- if(!confirm('Apagar todos os dados do Respiro neste dispositivo? Esta ação não pode ser desfeita. Se quiser guardar uma cópia, exporte seus dados antes.')) return;
- Store.clear(); ['respiro-strategies-v2','respiro-history-v2','respiro-triggers-v1'].forEach(key=>localStorage.removeItem(key)); localData=Store.read(); state.strategies=localData.strategies; state.customTriggers=localData.triggers; state.emotion=null; state.triggers=[]; state.intensity=5; state.route='home'; render(); toast('Dados apagados');
+function startApp(){
+  // Retomada orientada: se existe um ponto de parada, ele vira a primeira tela na reabertura.
+  const paused=latestPausedTask();
+  if(paused){ selectedTask=paused.id; view="resume"; }
+  else view="tasks";
+  history.replaceState({fio:true,view,selectedTask,depth:0},'',location.href);
+  fioHistoryDepth=0;
+  historyReady=true;
+  render();
 }
 
-document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
-function goBack(){if(state.route==='home'){toast('Você está no início.');return;}if(state.route==='senses'){state.route='regulate';state.sensesStep=-1;render();return;}if(state.route==='done'||state.route==='task'){state.route='regulate';render();return;}if(state.route==='breath'){stopBreathing();state.route='regulate';render();return;}if(state.route==='checkin-intensity'){state.route='checkin';render();return;}if(state.route==='regulate'){state.route='checkin-intensity';render();return;}state.route='home';render();}
-document.getElementById('backBtn').onclick=goBack;
-function setPageHistory(){history.replaceState({respiro:true},'',location.href);history.pushState({respiro:true},'',location.href);}
-window.addEventListener('popstate',()=>{history.pushState({respiro:true},'',location.href);goBack();});
-setPageHistory();
-document.getElementById('menuBtn').onclick=()=>{state.route='settings';render();};
-render();
+document.querySelector("#brandHome").onclick=()=>navigate("tasks");
+document.querySelector("#homeBtn").onclick=()=>navigate("tasks");
+document.querySelector("#settingsBtn").onclick=()=>navigate("data");
+document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>navigate(b.dataset.view));
 
-document.getElementById('importFile').addEventListener('change',e=>{const file=e.target.files?.[0];if(file)importDataFromFile(file);e.target.value='';});
+startApp();
